@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>薪資系統</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <h1>薪資系統</h1>
+      <p id="today" class="muted"></p>
+    </header>
+
+    <section class="card" aria-labelledby="punch-title">
+      <h2 id="punch-title">今日打卡</h2>
+      <p id="clock" class="clock">--:--:--</p>
+      <p id="status" class="status">今日尚未打上班卡</p>
+      <div class="buttons">
+        <button id="btn-in" class="btn btn-primary" type="button">上班打卡</button>
+        <button id="btn-out" class="btn" type="button">下班打卡</button>
+      </div>
+      <p id="message" class="message" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="card" aria-labelledby="stats-title">
+      <h2 id="stats-title">本月統計</h2>
+      <dl class="stats">
+        <div class="stat">
+          <dt>遲到次數</dt>
+          <dd id="stat-late-count">0 次</dd>
+        </div>
+        <div class="stat">
+          <dt>遲到時間</dt>
+          <dd id="stat-late-min">0 分鐘</dd>
+        </div>
+        <div class="stat">
+          <dt>加班時數</dt>
+          <dd id="stat-ot">0 小時</dd>
+        </div>
+      </dl>
+      <p class="rule muted">
+        09:05 前打卡不算遲到，超過後從 09:00 起算分鐘。
+        加班從 18:30 起算，每 30 分鐘為單位。
+      </p>
+    </section>
+
+    <section class="card" aria-labelledby="records-title">
+      <h2 id="records-title">打卡紀錄</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>上班</th>
+              <th>下班</th>
+              <th>遲到</th>
+              <th>加班</th>
+            </tr>
+          </thead>
+          <tbody id="records"></tbody>
+        </table>
+      </div>
+      <p id="empty" class="muted empty">尚無打卡紀錄</p>
+    </section>
+  </main>
+
+  <script>
+    // 規則設定
+    var WORK_START = 9 * 60;       // 上班時間 09:00
+    var GRACE = 5;                 // 寬限 5 分鐘
+    var OT_START = 18 * 60 + 30;   // 加班從 18:30 起算
+    var OT_STEP = 30;              // 每 30 分鐘為單位
+    var STORAGE_KEY = 'payroll-records';
+    var WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+
+    function $(id) { return document.getElementById(id); }
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function toMinutes(text) {
+      var parts = text.split(':');
+      return Number(parts[0]) * 60 + Number(parts[1]);
+    }
+    function dateKey(d) {
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    }
+    function timeText(d) {
+      return pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    // 紀錄存取（以日期為鍵：{ "2026-10-16": { in: "08:55", out: "19:10" } }）
+    var records = load();
+
+    function load() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {};
+      } catch (e) {
+        return {};
+      }
+    }
+
+    function save() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+      } catch (e) {}
+    }
+
+    // 計算遲到分鐘與加班分鐘
+    function lateMinutes(inTime) {
+      var m = toMinutes(inTime);
+      return m > WORK_START + GRACE ? m - WORK_START : 0;
+    }
+
+    function overtimeMinutes(outTime) {
+      var m = toMinutes(outTime);
+      return m > OT_START ? Math.floor((m - OT_START) / OT_STEP) * OT_STEP : 0;
+    }
+
+    function hoursText(minutes) {
+      return (minutes / 60).toFixed(1);
+    }
+
+    // 畫面更新
+    function renderClock() {
+      var now = new Date();
+      $('clock').textContent = timeText(now) + ':' + pad(now.getSeconds());
+      $('today').textContent =
+        now.getFullYear() + ' 年 ' + (now.getMonth() + 1) + ' 月 ' + now.getDate() +
+        ' 日 星期' + WEEKDAYS[now.getDay()];
+    }
+
+    function renderPunch() {
+      var today = records[dateKey(new Date())] || {};
+      var status = '今日尚未打上班卡';
+      if (today.in && !today.out) {
+        status = '已於 ' + today.in + ' 打上班卡';
+        if (lateMinutes(today.in)) status += '，遲到 ' + lateMinutes(today.in) + ' 分鐘';
+      } else if (today.in && today.out) {
+        status = '今日已完成打卡：' + today.in + ' – ' + today.out;
+      }
+      $('status').textContent = status;
+      $('btn-in').disabled = !!today.in;
+      $('btn-out').disabled = !today.in || !!today.out;
+    }
+
+    function renderStats() {
+      var prefix = dateKey(new Date()).slice(0, 7);
+      var lateCount = 0, lateTotal = 0, otTotal = 0;
+      Object.keys(records).forEach(function (key) {
+        if (key.indexOf(prefix) !== 0) return;
+        var r = records[key];
+        if (r.in && lateMinutes(r.in)) {
+          lateCount += 1;
+          lateTotal += lateMinutes(r.in);
+        }
+        if (r.out) otTotal += overtimeMinutes(r.out);
+      });
+      $('stat-late-count').textContent = lateCount + ' 次';
+      $('stat-late-min').textContent = lateTotal + ' 分鐘';
+      $('stat-ot').textContent = hoursText(otTotal) + ' 小時';
+    }
+
+    function renderTable() {
+      var keys = Object.keys(records).sort().reverse();
+      var html = '';
+      keys.forEach(function (key) {
+        var r = records[key];
+        var d = new Date(key + 'T00:00:00');
+        var late = r.in ? lateMinutes(r.in) : 0;
+        var ot = r.out ? overtimeMinutes(r.out) : 0;
+        html += '<tr>' +
+          '<td>' + pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + ' 週' + WEEKDAYS[d.getDay()] + '</td>' +
+          '<td>' + (r.in || '—') + '</td>' +
+          '<td>' + (r.out || '—') + '</td>' +
+          '<td' + (late ? ' class="late"' : '') + '>' + (late ? late + ' 分' : '—') + '</td>' +
+          '<td' + (ot ? ' class="overtime"' : '') + '>' + (ot ? hoursText(ot) + ' 小時' : '—') + '</td>' +
+          '</tr>';
+      });
+      $('records').innerHTML = html;
+      $('empty').hidden = keys.length > 0;
+    }
+
+    function render() {
+      renderPunch();
+      renderStats();
+      renderTable();
+    }
+
+    // 打卡動作
+    $('btn-in').addEventListener('click', function () {
+      var now = new Date();
+      var key = dateKey(now);
+      if (records[key] && records[key].in) return;
+      records[key] = { in: timeText(now), out: null };
+      save();
+      var late = lateMinutes(records[key].in);
+      $('message').textContent = '已記錄 ' + records[key].in + ' 上班打卡' +
+        (late ? '，遲到 ' + late + ' 分鐘。' : '，準時。');
+      render();
+    });
+
+    $('btn-out').addEventListener('click', function () {
+      var now = new Date();
+      var key = dateKey(now);
+      var rec = records[key];
+      if (!rec || !rec.in || rec.out) return;
+      rec.out = timeText(now);
+      save();
+      var ot = overtimeMinutes(rec.out);
+      $('message').textContent = '已記錄 ' + rec.out + ' 下班打卡' +
+        (ot ? '，加班 ' + hoursText(ot) + ' 小時。' : '。');
+      render();
+    });
+
+    renderClock();
+    render();
+    setInterval(renderClock, 1000);
+  </script>
+</body>
+</html>
