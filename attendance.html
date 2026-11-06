@@ -20,13 +20,14 @@
     </header>
 
     <section class="card" aria-labelledby="records-title">
-      <h2 id="records-title">打卡紀錄</h2>
+      <h2 id="records-title">所有人的打卡紀錄</h2>
       <p id="summary" class="muted"></p>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>日期</th>
+              <th>員工</th>
               <th>上班</th>
               <th>下班</th>
               <th>遲到</th>
@@ -42,8 +43,8 @@
 
   <script>
     // Supabase 連線設定：到 Supabase 專案的 Project Settings → API 複製
-    var SUPABASE_URL = 'https://你的專案代碼.supabase.co';
-    var SUPABASE_ANON_KEY = '你的 anon public key';
+    var SUPABASE_URL = 'https://pdxxbrjgyifdulmdlkol.supabase.co';
+    var SUPABASE_ANON_KEY = 'sb_publishable_rTN2uBj56SvnjCIBlke9_A_o_bA2Vve';
 
     var WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
     var TIME_FORMAT = new Intl.DateTimeFormat('en-GB', {
@@ -54,6 +55,14 @@
     });
 
     function $(id) { return document.getElementById(id); }
+
+    function escapeHtml(text) {
+      return String(text == null ? '' : text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
 
     function showMessage(text, isError) {
       var el = $('message');
@@ -81,6 +90,7 @@
         var ot = r.overtime_minutes > 0;
         html += '<tr>' +
           '<td>' + dateHtml(r.work_date) + '</td>' +
+          '<td>' + escapeHtml(r.employees ? r.employees.name : '—') + '</td>' +
           '<td>' + timeText(r.clock_in_at) + '</td>' +
           '<td>' + timeText(r.clock_out_at) + '</td>' +
           '<td' + (late ? ' class="late"' : '') + '>' + (late ? r.late_minutes + ' 分' : '—') + '</td>' +
@@ -98,7 +108,7 @@
         return;
       }
       var url = SUPABASE_URL + '/rest/v1/attendance' +
-        '?select=work_date,clock_in_at,clock_out_at,late_minutes,overtime_minutes' +
+        '?select=work_date,clock_in_at,clock_out_at,late_minutes,overtime_minutes,employees(name)' +
         '&order=work_date.desc,clock_in_at.desc';
       fetch(url, {
         headers: {
