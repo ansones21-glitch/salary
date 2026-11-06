@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>上下班打卡</title>
+  <title>設備狀態</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -16,8 +16,100 @@
     </nav>
 
     <header class="header">
-      <h1>上下班打卡</h1>
+      <h1>設備狀態</h1>
     </header>
+
+    <section class="card" aria-labelledby="equipment-title">
+      <h2 id="equipment-title">系上設備</h2>
+      <p id="summary" class="muted"></p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>設備名稱</th>
+              <th>狀態</th>
+              <th>財產編號</th>
+              <th>類別</th>
+              <th>位置</th>
+            </tr>
+          </thead>
+          <tbody id="equipment"></tbody>
+        </table>
+      </div>
+      <p id="message" class="muted empty" role="status">載入中…</p>
+    </section>
   </main>
+
+  <script>
+    // Supabase 連線設定：到 Supabase 專案的 Project Settings → API 複製
+    var SUPABASE_URL = 'https://pdxxbrjgyifdulmdlkol.supabase.co';
+    var SUPABASE_ANON_KEY = 'sb_publishable_rTN2uBj56SvnjCIBlke9_A_o_bA2Vve';
+
+    var STATUS_CLASS = {
+      '可用': 'pill-ok',
+      '借出中': 'pill-lent',
+      '維修中': 'pill-repair',
+      '報廢': 'pill-scrap'
+    };
+
+    function $(id) { return document.getElementById(id); }
+
+    function escapeHtml(text) {
+      return String(text == null ? '' : text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function showMessage(text, isError) {
+      var el = $('message');
+      el.textContent = text;
+      el.className = 'empty ' + (isError ? 'error' : 'muted');
+      el.hidden = !text;
+    }
+
+    function render(rows) {
+      var html = '';
+      rows.forEach(function (r) {
+        html += '<tr>' +
+          '<td>' + escapeHtml(r.name) + '</td>' +
+          '<td><span class="pill ' + (STATUS_CLASS[r.status] || 'pill-scrap') + '">' +
+            escapeHtml(r.status) + '</span></td>' +
+          '<td>' + escapeHtml(r.asset_no) + '</td>' +
+          '<td>' + escapeHtml(r.category) + '</td>' +
+          '<td>' + escapeHtml(r.location || '—') + '</td>' +
+          '</tr>';
+      });
+      $('equipment').innerHTML = html;
+      $('summary').textContent = rows.length ? '共 ' + rows.length + ' 項設備' : '';
+      showMessage(rows.length ? '' : '目前沒有設備資料');
+    }
+
+    function load() {
+      if (SUPABASE_URL.indexOf('你的') !== -1 || SUPABASE_ANON_KEY.indexOf('你的') !== -1) {
+        showMessage('尚未設定 Supabase 連線，請先修改程式碼最上方的 SUPABASE_URL 與 SUPABASE_ANON_KEY。', true);
+        return;
+      }
+      var url = SUPABASE_URL + '/rest/v1/equipment' +
+        '?select=asset_no,name,category,location,status&order=asset_no.asc';
+      fetch(url, {
+        headers: {
+          apikey: SUPABASE_ANON_KEY,
+          Authorization: 'Bearer ' + SUPABASE_ANON_KEY
+        }
+      })
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then(render)
+        .catch(function (err) {
+          showMessage('無法載入設備資料（' + err.message + '），請確認連線設定與資料表權限。', true);
+        });
+    }
+
+    load();
+  </script>
 </body>
 </html>
