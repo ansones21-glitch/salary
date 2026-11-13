@@ -8,6 +8,14 @@
 </head>
 <body>
   <main class="page">
+    <nav class="nav" aria-label="主選單">
+      <a href="index.html" aria-current="page">首頁</a>
+      <a href="attendance.html">上下班打卡</a>
+      <a href="late.html">遲到</a>
+      <a href="overtime.html">加班</a>
+      <a id="auth" class="nav-auth" href="login.html">登入</a>
+    </nav>
+
     <header class="header">
       <h1>薪資系統</h1>
       <p id="today" class="muted"></p>
@@ -88,7 +96,7 @@
       return pad(d.getHours()) + ':' + pad(d.getMinutes());
     }
 
-    // 紀錄存取（以日期為鍵：{ "2026-10-16": { in: "08:55", out: "19:10" } }）
+    // 紀錄存取（以日期為鍵：{ "2026-10-30": { in: "08:55", out: "19:10" } }）
     var records = load();
 
     function load() {
@@ -215,6 +223,43 @@
     renderClock();
     render();
     setInterval(renderClock, 1000);
+
+    // 登入狀態：登入後導覽列的「登入」會變成「登出」
+    var SESSION_KEY = 'payroll-session';
+
+    function getSession() {
+      try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (e) { return null; }
+    }
+
+    function clearSession() {
+      try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    }
+
+    function renderAuth() {
+      var link = document.getElementById('auth');
+      var s = getSession();
+      if (s && s.access_token) {
+        link.textContent = '登出';
+        link.href = '#';
+      } else {
+        link.textContent = '登入';
+        link.href = 'login.html';
+      }
+    }
+
+    document.getElementById('auth').addEventListener('click', function (e) {
+      var s = getSession();
+      if (!s || !s.access_token) return;   // 未登入：照一般連結前往登入頁
+      e.preventDefault();
+      function done() { clearSession(); location.reload(); }
+      if (!s.url || !s.key) { done(); return; }
+      fetch(s.url + '/auth/v1/logout', {
+        method: 'POST',
+        headers: { apikey: s.key, Authorization: 'Bearer ' + s.access_token }
+      }).then(done, done);
+    });
+
+    renderAuth();
   </script>
 </body>
 </html>
