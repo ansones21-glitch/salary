@@ -13,27 +13,56 @@
       <a href="attendance.html" aria-current="page">上下班打卡</a>
       <a href="late.html">遲到</a>
       <a href="overtime.html">加班</a>
+      <a id="auth" class="nav-auth" href="login.html">登入</a>
     </nav>
 
     <header class="header">
       <h1>上下班打卡</h1>
     </header>
 
+    <!-- 只有管理者看得到 -->
+    <section id="admin-card" class="card" aria-labelledby="admin-title" hidden>
+      <div class="toolbar">
+        <h2 id="admin-title">管理者操作</h2>
+        <button id="add-btn" class="btn btn-small" type="button">＋ 新增紀錄</button>
+      </div>
+
+      <form id="record-form" class="form form-panel" hidden>
+        <p id="form-title" class="form-title">新增紀錄</p>
+        <div class="form-grid">
+          <div class="field field-wide">
+            <label for="f-user">員工帳號</label>
+            <select id="f-user" required></select>
+          </div>
+          <div class="field field-wide">
+            <label for="f-date">日期</label>
+            <input id="f-date" type="date" required>
+          </div>
+          <div class="field">
+            <label for="f-in">上班時間</label>
+            <input id="f-in" type="time" required>
+          </div>
+          <div class="field">
+            <label for="f-out">下班時間（可留空）</label>
+            <input id="f-out" type="time">
+          </div>
+        </div>
+        <div class="form-actions">
+          <button id="f-save" class="btn btn-primary btn-small" type="submit">儲存</button>
+          <button id="f-cancel" class="btn btn-small" type="button">取消</button>
+        </div>
+        <p id="form-message" class="note" role="status" aria-live="polite"></p>
+      </form>
+
+      <p id="action-message" class="note" role="status" aria-live="polite"></p>
+    </section>
+
     <section class="card" aria-labelledby="records-title">
-      <h2 id="records-title">所有人的打卡紀錄</h2>
+      <h2 id="records-title">打卡紀錄</h2>
       <p id="summary" class="muted"></p>
       <div class="table-wrap">
         <table>
-          <thead>
-            <tr>
-              <th>日期</th>
-              <th>員工</th>
-              <th>上班</th>
-              <th>下班</th>
-              <th>遲到</th>
-              <th>加班</th>
-            </tr>
-          </thead>
+          <thead id="thead"></thead>
           <tbody id="records"></tbody>
         </table>
       </div>
@@ -43,8 +72,8 @@
 
   <script>
     // Supabase 連線設定：到 Supabase 專案的 Project Settings → API 複製
-    var SUPABASE_URL = 'https://pdxxbrjgyifdulmdlkol.supabase.co';
-    var SUPABASE_ANON_KEY = 'sb_publishable_rTN2uBj56SvnjCIBlke9_A_o_bA2Vve';
+    var SUPABASE_URL = 'https://你的專案代碼.supabase.co';
+    var SUPABASE_ANON_KEY = '你的 anon public key';
 
     var WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
     var TIME_FORMAT = new Intl.DateTimeFormat('en-GB', {
@@ -53,6 +82,17 @@
       minute: '2-digit',
       hourCycle: 'h23'
     });
+    var DATE_FORMAT = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Taipei',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+
+    var rows = [];          // 目前畫面上的打卡紀錄
+    var users = [];         // 管理者才有：可選的員工帳號 { id, email }
+    var isAdmin = false;    // 只決定要不要顯示管理介面；真正的權限由資料庫把關
+    var editingId = null;   // 正在修改的紀錄 id；新增時為 null
 
     function $(id) { return document.getElementById(id); }
 
@@ -71,6 +111,12 @@
       el.hidden = !text;
     }
 
+    function setNote(id, text, isError) {
+      var el = $(id);
+      el.textContent = text;
+      el.className = 'note' + (isError ? ' error' : '');
+    }
+
     // work_date 例如 "2026-11-05" → "11/05 週四"（手機版隱藏星期）
     function dateHtml(workDate) {
       var p = workDate.split('-');
@@ -83,14 +129,82 @@
       return iso ? TIME_FORMAT.format(new Date(iso)) : '—';
     }
 
-    function render(rows) {
+    function userLabel(id) {
+      for (var i = 0; i < users.length; i++) {
+        if (users[i].id === id) return users[i].email;
+      }
+      return String(id).slice(0, 8) + '…';
+    }
+
+    // ---- 呼叫 Supabase ----
+    function api(method, path, body, extraHeaders) {
+      return getToken().then(function (token) {
+        var headers = { apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + token };
+        if (body !== undefined) headers['Content-Type'] = 'application/json';
+        Object.keys(extraHeaders || {}).forEach(function (k) { headers[k] = extraHeaders[k]; });
+        return fetch(SUPABASE_URL + path, {
+          method: method,
+          headers: headers,
+          body: body === undefined ? undefined : JSON.stringify(body)
+        });
+      });
+    }
+
+    function apiError(status, body) {
+      var code = body && body.code;
+      if (code === '23505') return '這位員工當天已經有一筆紀錄了。';
+      if (code === '23514') return '下班時間不能早於上班時間。';
+      if (status === 401) return '登入已過期，請重新登入。';
+      if (status === 403 || code === '42501') return '沒有權限執行這個操作。請確認你是管理者，並重新登入一次。';
+      return '操作失敗（HTTP ' + status + '），請稍後再試。';
+    }
+
+    // 新增、修改、刪除共用：回傳資料庫實際動到的紀錄
+    function write(method, path, body) {
+      return api(method, path, body, { Prefer: 'return=representation' }).then(function (res) {
+        return res.json().catch(function () { return null; }).then(function (data) {
+          if (!res.ok) throw new Error(apiError(res.status, data));
+          return data;
+        });
+      });
+    }
+
+    function fetchRows() {
+      var path = '/rest/v1/attendance' +
+        '?select=id,user_id,work_date,clock_in_at,clock_out_at,late_minutes,overtime_minutes' +
+        '&order=work_date.desc,clock_in_at.desc';
+      return api('GET', path).then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      });
+    }
+
+    function fetchUsers() {
+      return api('POST', '/rest/v1/rpc/admin_list_users', {}).then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return res.json();
+      });
+    }
+
+    // ---- 畫面 ----
+    function render() {
+      $('admin-card').hidden = !isAdmin;
+
+      $('thead').innerHTML = '<tr><th>日期</th><th>上班</th><th>下班</th><th>遲到</th><th>加班</th></tr>';
+
       var html = '';
       rows.forEach(function (r) {
         var late = r.late_minutes > 0;
         var ot = r.overtime_minutes > 0;
         html += '<tr>' +
-          '<td>' + dateHtml(r.work_date) + '</td>' +
-          '<td>' + escapeHtml(r.employees ? r.employees.name : '—') + '</td>' +
+          '<td>' + dateHtml(r.work_date) +
+            (isAdmin
+              ? '<span class="sub">' + escapeHtml(userLabel(r.user_id)) + '</span>' +
+                '<span class="row-actions">' +
+                  '<button class="link-btn" type="button" data-act="edit" data-id="' + escapeHtml(r.id) + '">修改</button>' +
+                  '<button class="link-btn danger" type="button" data-act="delete" data-id="' + escapeHtml(r.id) + '">刪除</button>' +
+                '</span>'
+              : '') + '</td>' +
           '<td>' + timeText(r.clock_in_at) + '</td>' +
           '<td>' + timeText(r.clock_out_at) + '</td>' +
           '<td' + (late ? ' class="late"' : '') + '>' + (late ? r.late_minutes + ' 分' : '—') + '</td>' +
@@ -102,30 +216,250 @@
       showMessage(rows.length ? '' : '目前沒有打卡紀錄');
     }
 
+    function refresh() {
+      return fetchRows().then(function (data) {
+        rows = data;
+        render();
+      });
+    }
+
+    // ---- 管理者：新增與修改表單 ----
+    function openForm(row) {
+      editingId = row ? row.id : null;
+      $('form-title').textContent = row ? '修改紀錄' : '新增紀錄';
+      setNote('form-message', '', false);
+
+      var options = users.slice();
+      if (row && !options.some(function (u) { return u.id === row.user_id; })) {
+        options.push({ id: row.user_id, email: userLabel(row.user_id) });
+      }
+      $('f-user').innerHTML = options.length
+        ? options.map(function (u) {
+            return '<option value="' + escapeHtml(u.id) + '">' + escapeHtml(u.email) + '</option>';
+          }).join('')
+        : '<option value="">（沒有可選的帳號）</option>';
+
+      if (row) {
+        $('f-user').value = row.user_id;
+        $('f-date').value = row.work_date;
+        $('f-in').value = timeText(row.clock_in_at);
+        $('f-out').value = row.clock_out_at ? timeText(row.clock_out_at) : '';
+      } else {
+        $('f-date').value = DATE_FORMAT.format(new Date());
+        $('f-in').value = '';
+        $('f-out').value = '';
+      }
+      $('f-user').disabled = !!row;      // 修改時不能換員工
+      $('record-form').hidden = false;
+      $('f-in').focus();
+    }
+
+    function closeForm() {
+      $('record-form').hidden = true;
+      editingId = null;
+    }
+
+    function findRow(id) {
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].id === id) return rows[i];
+      }
+      return null;
+    }
+
+    $('add-btn').addEventListener('click', function () {
+      setNote('action-message', '', false);
+      if (!users.length) {
+        setNote('action-message', '沒有可選的員工帳號。請先在 Supabase 執行 attendance_admin.sql，並確認已建立帳號。', true);
+        return;
+      }
+      openForm(null);
+    });
+
+    $('f-cancel').addEventListener('click', closeForm);
+
+    $('record-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var date = $('f-date').value;
+      var tin = $('f-in').value;
+      var tout = $('f-out').value;
+      if (!$('f-user').value) {
+        setNote('form-message', '請選擇員工帳號。', true);
+        return;
+      }
+      if (tout && tout < tin) {
+        setNote('form-message', '下班時間不能早於上班時間。', true);
+        return;
+      }
+      // 時間以台北時間（+08:00）送出；出勤日、遲到、加班由資料庫計算
+      var body = {
+        clock_in_at: date + 'T' + tin + ':00+08:00',
+        clock_out_at: tout ? date + 'T' + tout + ':00+08:00' : null
+      };
+      var editing = editingId !== null;
+      var request;
+      if (editing) {
+        request = write('PATCH', '/rest/v1/attendance?id=eq.' + encodeURIComponent(editingId), body)
+          .then(function (data) {
+            if (Array.isArray(data) && data.length === 0) {
+              throw new Error('沒有修改到任何紀錄，可能沒有權限，或這筆紀錄已被刪除。');
+            }
+          });
+      } else {
+        body.user_id = $('f-user').value;
+        request = write('POST', '/rest/v1/attendance', body);
+      }
+
+      var button = $('f-save');
+      button.disabled = true;
+      setNote('form-message', '儲存中…', false);
+      request
+        .then(function () { return refresh(); })
+        .then(function () {
+          closeForm();
+          setNote('action-message', editing ? '已修改紀錄。' : '已新增紀錄。', false);
+        })
+        .catch(function (err) { setNote('form-message', err.message, true); })
+        .then(function () { button.disabled = false; });
+    });
+
+    // ---- 管理者：修改與刪除按鈕 ----
+    $('records').addEventListener('click', function (e) {
+      var button = e.target.closest('button[data-act]');
+      if (!button) return;
+      var row = findRow(button.getAttribute('data-id'));
+      if (!row) return;
+      setNote('action-message', '', false);
+
+      if (button.getAttribute('data-act') === 'edit') {
+        openForm(row);
+        $('admin-card').scrollIntoView({ block: 'nearest' });
+        return;
+      }
+
+      var label = row.work_date + '（' + userLabel(row.user_id) + '）';
+      if (!window.confirm('確定要刪除 ' + label + ' 的紀錄嗎？\n刪除後無法復原。')) return;
+      write('DELETE', '/rest/v1/attendance?id=eq.' + encodeURIComponent(row.id))
+        .then(function (data) {
+          if (Array.isArray(data) && data.length === 0) {
+            throw new Error('沒有刪除到任何紀錄，可能沒有權限，或這筆紀錄已被刪除。');
+          }
+          return refresh();
+        })
+        .then(function () {
+          if (editingId === row.id) closeForm();
+          setNote('action-message', '已刪除 ' + label + ' 的紀錄。', false);
+        })
+        .catch(function (err) { setNote('action-message', err.message, true); });
+    });
+
+    // ---- 載入 ----
+    function tokenPayload(token) {
+      try {
+        var part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+        return JSON.parse(atob(part));
+      } catch (e) {
+        return null;
+      }
+    }
+
     function load() {
       if (SUPABASE_URL.indexOf('你的') !== -1 || SUPABASE_ANON_KEY.indexOf('你的') !== -1) {
         showMessage('尚未設定 Supabase 連線，請先修改程式碼最上方的 SUPABASE_URL 與 SUPABASE_ANON_KEY。', true);
         return;
       }
-      var url = SUPABASE_URL + '/rest/v1/attendance' +
-        '?select=work_date,clock_in_at,clock_out_at,late_minutes,overtime_minutes,employees(name)' +
-        '&order=work_date.desc,clock_in_at.desc';
-      fetch(url, {
-        headers: {
-          apikey: SUPABASE_ANON_KEY,
-          Authorization: 'Bearer ' + SUPABASE_ANON_KEY
-        }
-      })
-        .then(function (res) {
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          return res.json();
+      var usersFailed = false;
+      getToken()
+        .then(function (token) {
+          var payload = token === SUPABASE_ANON_KEY ? null : tokenPayload(token);
+          isAdmin = !!(payload && payload.app_metadata && payload.app_metadata.role === 'admin');
+          return Promise.all([
+            fetchRows(),
+            isAdmin
+              ? fetchUsers().catch(function () { usersFailed = true; return []; })
+              : Promise.resolve([])
+          ]);
         })
-        .then(render)
+        .then(function (result) {
+          rows = result[0];
+          users = result[1];
+          render();
+          if (usersFailed) {
+            setNote('action-message', '無法載入員工帳號清單，請先在 Supabase 執行 attendance_admin.sql。', true);
+          }
+        })
         .catch(function (err) {
           showMessage('無法載入打卡紀錄（' + err.message + '），請確認連線設定與資料表權限。', true);
         });
     }
 
+    // 登入狀態：登入後導覽列的「登入」會變成「登出」
+    var SESSION_KEY = 'payroll-session';
+
+    function getSession() {
+      try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (e) { return null; }
+    }
+
+    function saveSession(s) {
+      try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+    }
+
+    function clearSession() {
+      try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    }
+
+    function renderAuth() {
+      var link = document.getElementById('auth');
+      var s = getSession();
+      if (s && s.access_token) {
+        link.textContent = '登出';
+        link.href = '#';
+      } else {
+        link.textContent = '登入';
+        link.href = 'login.html';
+      }
+    }
+
+    document.getElementById('auth').addEventListener('click', function (e) {
+      var s = getSession();
+      if (!s || !s.access_token) return;   // 未登入：照一般連結前往登入頁
+      e.preventDefault();
+      function done() { clearSession(); location.reload(); }
+      if (!s.url || !s.key) { done(); return; }
+      fetch(s.url + '/auth/v1/logout', {
+        method: 'POST',
+        headers: { apikey: s.key, Authorization: 'Bearer ' + s.access_token }
+      }).then(done, done);
+    });
+
+    // 查詢時要帶的憑證：已登入用自己的登入憑證（快過期就先更新），未登入用 anon key
+    function getToken() {
+      var s = getSession();
+      if (!s || !s.access_token) return Promise.resolve(SUPABASE_ANON_KEY);
+      if (s.expires_at - Date.now() / 1000 > 60) return Promise.resolve(s.access_token);
+      return fetch(SUPABASE_URL + '/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST',
+        headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: s.refresh_token })
+      })
+        .then(function (res) {
+          if (!res.ok) throw new Error('refresh failed');
+          return res.json();
+        })
+        .then(function (body) {
+          s.access_token = body.access_token;
+          s.refresh_token = body.refresh_token;
+          s.expires_at = body.expires_at || Math.floor(Date.now() / 1000) + body.expires_in;
+          saveSession(s);
+          return s.access_token;
+        })
+        .catch(function () {
+          clearSession();
+          renderAuth();
+          return SUPABASE_ANON_KEY;
+        });
+    }
+
+    renderAuth();
     load();
   </script>
 </body>
