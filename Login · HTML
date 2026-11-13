@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登入</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="page">
+    <nav class="nav" aria-label="主選單">
+      <a href="index.html">首頁</a>
+      <a href="attendance.html">上下班打卡</a>
+      <a href="late.html">遲到</a>
+      <a href="overtime.html">加班</a>
+      <a id="auth" class="nav-auth" href="login.html" aria-current="page">登入</a>
+    </nav>
+
+    <header class="header">
+      <h1>登入</h1>
+    </header>
+
+    <section class="card" aria-labelledby="login-title">
+      <h2 id="login-title">使用信箱與密碼登入</h2>
+
+      <p id="logged-in" class="status" hidden></p>
+
+      <form id="login-form" class="form">
+        <div class="field">
+          <label for="email">信箱</label>
+          <input id="email" name="email" type="email" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="password">密碼</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button id="submit" class="btn btn-primary" type="submit">登入</button>
+      </form>
+
+      <p id="message" class="message" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script>
+    // Supabase 連線設定：到 Supabase 專案的 Project Settings → API 複製
+    var SUPABASE_URL = 'https://你的專案代碼.supabase.co';
+    var SUPABASE_ANON_KEY = '你的 anon public key';
+
+    function $(id) { return document.getElementById(id); }
+
+    function showMessage(text, isError) {
+      var el = $('message');
+      el.textContent = text;
+      el.className = 'message' + (isError ? ' error' : '');
+    }
+
+    // 把 Supabase 的錯誤轉成看得懂的訊息
+    function errorText(status, body) {
+      var code = (body && (body.error_code || body.code)) || '';
+      var msg = (body && (body.msg || body.error_description || body.message)) || '';
+      if (code === 'invalid_credentials' || /invalid login credentials/i.test(msg)) {
+        return '信箱或密碼錯誤，請再試一次。';
+      }
+      if (code === 'email_not_confirmed' || /email not confirmed/i.test(msg)) {
+        return '這個信箱還沒完成驗證，請先到信箱點擊確認信。';
+      }
+      if (status === 429) return '嘗試次數太多，請稍後再試。';
+      return '登入失敗（HTTP ' + status + '），請確認連線設定。';
+    }
+
+    function login(email, password) {
+      return fetch(SUPABASE_URL + '/auth/v1/token?grant_type=password', {
+        method: 'POST',
+        headers: { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, password: password })
+      }).then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (body) {
+          if (!res.ok) throw new Error(errorText(res.status, body));
+          return body;
+        });
+      });
+    }
+
+    $('login-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      if (SUPABASE_URL.indexOf('你的') !== -1 || SUPABASE_ANON_KEY.indexOf('你的') !== -1) {
+        showMessage('尚未設定 Supabase 連線，請先修改程式碼最上方的 SUPABASE_URL 與 SUPABASE_ANON_KEY。', true);
+        return;
+      }
+      var button = $('submit');
+      button.disabled = true;
+      showMessage('登入中…', false);
+
+      login($('email').value.trim(), $('password').value)
+        .then(function (body) {
+          var session = {
+            access_token: body.access_token,
+            refresh_token: body.refresh_token,
+            expires_at: body.expires_at || Math.floor(Date.now() / 1000) + body.expires_in,
+            email: body.user ? body.user.email : '',
+            url: SUPABASE_URL,
+            key: SUPABASE_ANON_KEY
+          };
+          try {
+            localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+          } catch (err) {
+            throw new Error('瀏覽器不允許儲存登入狀態，請關閉無痕模式後再試。');
+          }
+          location.href = 'index.html';
+        })
+        .catch(function (err) {
+          button.disabled = false;
+          $('password').value = '';
+          showMessage(err instanceof TypeError ? '無法連線到伺服器，請檢查網路。' : err.message, true);
+        });
+    });
+
+    // 已登入就不顯示表單
+    function renderLoggedIn() {
+      var s = getSession();
+      var loggedIn = !!(s && s.access_token);
+      $('login-form').hidden = loggedIn;
+      $('logged-in').hidden = !loggedIn;
+      if (loggedIn) {
+        $('logged-in').textContent = '你已登入' + (s.email ? '：' + s.email : '') + '。要換帳號請先按右上方的「登出」。';
+      }
+    }
+
+    // 登入狀態：登入後導覽列的「登入」會變成「登出」
+    var SESSION_KEY = 'payroll-session';
+
+    function getSession() {
+      try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (e) { return null; }
+    }
+
+    function clearSession() {
+      try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    }
+
+    function renderAuth() {
+      var link = document.getElementById('auth');
+      var s = getSession();
+      if (s && s.access_token) {
+        link.textContent = '登出';
+        link.href = '#';
+      } else {
+        link.textContent = '登入';
+        link.href = 'login.html';
+      }
+    }
+
+    document.getElementById('auth').addEventListener('click', function (e) {
+      var s = getSession();
+      if (!s || !s.access_token) return;   // 未登入：照一般連結前往登入頁
+      e.preventDefault();
+      function done() { clearSession(); location.reload(); }
+      if (!s.url || !s.key) { done(); return; }
+      fetch(s.url + '/auth/v1/logout', {
+        method: 'POST',
+        headers: { apikey: s.key, Authorization: 'Bearer ' + s.access_token }
+      }).then(done, done);
+    });
+
+    renderAuth();
+
+    renderLoggedIn();
+  </script>
+</body>
+</html>
